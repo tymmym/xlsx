@@ -30,6 +30,7 @@ import           Data.ByteString.Lazy.Char8()
 import qualified Codec.Archive.Zip as Zip
 import           Data.Conduit
 import qualified Data.Conduit.List as CL
+import qualified Data.Conduit.Util as CU
 import           Data.XML.Types
 import           System.FilePath
 import           Text.XML as X
@@ -143,11 +144,11 @@ sheetRowSource x sheetN
 
 -- | Make 'Conduit' from 'mkMapRowsSink'.
 mkMapRows :: Monad m => Conduit [Cell] m MapRow
-mkMapRows = sequence mkMapRowsSink =$= CL.concatMap id
+mkMapRows = CL.sequence mkMapRowsSink =$= CL.concatMap id
 
 
 -- | Make 'MapRow' from list of 'Cell's.
-mkMapRowsSink :: Monad m => Sink [Cell] m [MapRow]
+mkMapRowsSink :: Monad m => GSink [Cell] m [MapRow]
 mkMapRowsSink = do
     header <- fromMaybe [] <$> CL.head
     rows   <- CL.consume
@@ -314,9 +315,9 @@ int = either error fst . T.decimal
 --
 -- FIXME: Some benchmarking required: maybe it's not very efficient to `peek`i
 -- each element twice. It's possible to swap call to `f` and `CL.peek`.
-mkXmlCond f = sequenceSink () $ const
+mkXmlCond f = CU.sequenceSink () $ const
   $ CL.peek >>= maybe            -- try get current event form the stream
-    (return Stop)                -- stop if stream is empty
+    (return CU.Stop)                -- stop if stream is empty
     (\_ -> f >>= maybe           -- try consume current event
-           (CL.drop 1 >> return (Emit () [])) -- skip it if can't process
-           (return . Emit () . (:[])))        -- return result otherwise
+           (CL.drop 1 >> return (CU.Emit () [])) -- skip it if can't process
+           (return . CU.Emit () . (:[])))        -- return result otherwise
