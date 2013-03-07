@@ -61,16 +61,25 @@ Executable           test
                     ,old-time
                     ,old-locale
                     ,filepath
-  
-test-suite data-test
-  type: exitcode-stdio-1.0
-  main-is:  DataTest.hs
-  hs-source-dirs: test/
-  Build-Depends: base, QuickCheck >= 2, HUnit,
-                 xlsx,
-                 test-framework,
-                 test-framework-hunit,
-                 test-framework-quickcheck2
+
+Test-suite          data-test
+  Type:             exitcode-stdio-1.0
+  Hs-source-dirs:   test
+  Ghc-options:      -Wall -fno-warn-unused-do-bind
+
+  Main-is:          DataTest.hs
+
+  Build-depends:    base, bytestring, containers, filepath
+                   ,QuickCheck >= 2
+                   ,HUnit
+                   ,xlsx
+                   ,temporary
+                   ,test-framework
+                   ,test-framework-hunit
+                   ,test-framework-quickcheck2
+                   ,text
+                   ,time
+
 
 source-repository head
   type:     git
