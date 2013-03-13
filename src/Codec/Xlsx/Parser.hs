@@ -148,7 +148,7 @@ mkMapRows = CL.sequence mkMapRowsSink =$= CL.concatMap id
 
 
 -- | Make 'MapRow' from list of 'Cell's.
-mkMapRowsSink :: Monad m => GSink [Cell] m [MapRow]
+mkMapRowsSink :: Monad m => Consumer [Cell] m [MapRow]
 mkMapRowsSink = do
     header <- fromMaybe [] <$> CL.head
     rows   <- CL.consume
@@ -189,7 +189,7 @@ getSheetCells (Xlsx{xlArchive=ar, xlSharedStrings=ss, xlWorksheetFiles=sheets}) 
 
 -- | Parse single cell from xml stream.
 getCell
- :: MonadThrow m => M.IntMap Text -> Sink Event m (Maybe Cell)
+ :: MonadThrow m => M.IntMap Text -> Consumer Event m (Maybe Cell)
 getCell ss = Xml.tagName (n"c") cAttrs cParser
   where
     cAttrs = do
@@ -235,7 +235,7 @@ pr x = Name
 
 
 -- | Get text from several nested tags
-tagSeq :: MonadThrow m => [Text] -> Sink Event m (Maybe Text)
+tagSeq :: MonadThrow m => [Text] -> Consumer Event m (Maybe Text)
 tagSeq (x:xs)
   = Xml.tagNoAttr (n x)
   $ foldr (\x -> Xml.force "" . Xml.tagNoAttr (n x)) Xml.content xs
@@ -302,7 +302,7 @@ parseWbRels = Xml.force "relationships required" $
       Xml.ignoreAttrs
       return (id, target)
 
----------------------------------------------------------------------
+-- ---------------------------------------------------------------------
 
 
 int :: Text -> Int
@@ -315,9 +315,20 @@ int = either error fst . T.decimal
 --
 -- FIXME: Some benchmarking required: maybe it's not very efficient to `peek`i
 -- each element twice. It's possible to swap call to `f` and `CL.peek`.
-mkXmlCond f = CU.sequenceSink () $ const
-  $ CL.peek >>= maybe            -- try get current event form the stream
-    (return CU.Stop)                -- stop if stream is empty
-    (\_ -> f >>= maybe           -- try consume current event
-           (CL.drop 1 >> return (CU.Emit () [])) -- skip it if can't process
-           (return . CU.Emit () . (:[])))        -- return result otherwise
+mkXmlCond f = self
+  where
+    self = CL.peek >>= maybe           -- try get current event form the stream
+           (return ())                 -- stop if stream is empty
+           (\_ -> yieldEvent >> self)  -- yield event and loop
+    yieldEvent = f >>= maybe           -- try consume current event
+                 (CL.drop 1)           -- skip it if can't process
+                 yield                 -- yield result otherwise
+
+-- mkXmlCond f = self
+--   where
+--     self = f >>= maybe                 -- try consume current event
+--            (CL.drop 1 >> peekEvent)    -- skip it if can't process, then try to peek next event
+--            (\e -> yield e >> self)     -- yield result otherwise and loop
+--     peekEvent = CL.peek >>= maybe      -- try get current event form the stream
+--                 (return ())            -- stop if stream is empty
+--                 (const self)           -- loop otherwise
