@@ -27,7 +27,7 @@ import qualified Data.Text.Read as T
 import qualified Data.ByteString.Lazy as L
 import           Data.ByteString.Lazy.Char8()
 
-import qualified Codec.Archive.Zip as Zip
+import           Codec.Archive.Zip
 import           Data.Conduit
 import qualified Data.Conduit.List as CL
 import qualified Data.Conduit.Util as CU
@@ -43,22 +43,19 @@ import           Codec.Xlsx
 type MapRow = Map.Map Text Text
 
 
--- | Read archive and preload 'Xlsx' fields
+-- | Preload 'Xlsx' fields
 xlsx :: FilePath -> IO Xlsx
-xlsx fname = do
-  ar <- Zip.toArchive <$> L.readFile fname
-  ss <- getSharedStrings ar
-  st <- getStyles ar
-  ws <- getWorksheetFiles ar
-  return $ Xlsx ar ss st ws
+xlsx fname = withArchive fname $
+  Xlsx fname <$> getSharedStrings <*> getStyles <*> getWorksheetFiles
 
 
 -- | Get data from specified worksheet as conduit source.
-cellSource :: MonadThrow m => Xlsx -> Int -> [Text] -> Source m [Cell]
-cellSource x sheetN cols  =  getSheetCells x sheetN
-                        $= filterColumns (S.fromList $ map col2int cols)
-                        $= groupRows
-                        $= reverseRows
+cellSource :: Xlsx -> Int -> [Text] -> Sink [Cell] (ResourceT Archive) a -> IO a
+cellSource x sheetN cols sink = withArchive (xlArchive x) $
+  getSheetCells x sheetN  $ filterColumns (S.fromList $ map col2int cols)
+                         =$ groupRows
+                         =$ reverseRows
+                         =$ sink
 
 
 decimal :: Monad m => Text -> m Int
@@ -72,22 +69,24 @@ rational t = case T.rational t of
   _ -> fail "invalid rational"
 
 
-sheet :: MonadThrow m => Xlsx -> Int -> m Worksheet
+sheet :: Xlsx -> Int -> IO Worksheet
 sheet Xlsx{xlArchive=ar, xlSharedStrings=ss, xlWorksheetFiles=sheets} sheetN
   | sheetN < 0 || sheetN >= length sheets
     = fail "parseSheet: Invalid sheet number"
   | otherwise
-    = collect parse
+    = collect <$> parse
   where
     filename = wfPath $ sheets !! sheetN
     sName = wfName $ sheets !! sheetN
-    file = fromJust $ Zip.fromEntry <$> Zip.findEntryByPath filename ar
-    doc = case parseLBS def file of
-      Left _ -> error "could not read file"
-      Right d -> d
-    tc :: Cursor
-    tc = fromDocument doc
-    parse = (tc $/ parseColumns, tc $/ parseRows)
+    file = L.fromChunks <$> (withArchive ar $ sourceEntry filename CL.consume)  -- FIXME: fromChunks
+    doc = do
+      f <- file
+      case parseLBS def f of
+        Left _ -> error "could not read file"
+        Right d -> return d
+    tc :: IO Cursor
+    tc = fromDocument <$> doc
+    parse = tc >>= (\x -> return (x $/ parseColumns, x $/ parseRows))
     parseColumns :: Cursor -> [ColumnsWidth]
     parseColumns = element (n"cols") &/ element (n"col") >=> parseColumn
     parseColumn :: Cursor -> [ColumnsWidth]
@@ -122,7 +121,7 @@ sheet Xlsx{xlArchive=ar, xlSharedStrings=ss, xlWorksheetFiles=sheets} sheetN
               Right (d, _) -> maybeToList $ fmap CellText $ M.lookup d ss
               _ -> []
           _ -> []
-    collect (cw, rd) = return $ Worksheet sName minX maxX minY maxY cw rowMap cellMap
+    collect (cw, rd) = Worksheet sName minX maxX minY maxY cw rowMap cellMap
       where
         (rowMap, (minX, maxX, minY, maxY, cellMap)) = foldr collectRow rInit rd
         rInit = (Map.empty, (maxBound, minBound, maxBound, minBound, Map.empty))
@@ -135,12 +134,12 @@ sheet Xlsx{xlArchive=ar, xlSharedStrings=ss, xlWorksheetFiles=sheets} sheetN
     
 
 -- | Get all rows from specified worksheet.
-sheetRowSource :: MonadThrow m => Xlsx -> Int -> Source m MapRow
-sheetRowSource x sheetN
-  =  getSheetCells x sheetN
-  $= groupRows
-  $= reverseRows
-  $= mkMapRows
+sheetRowSource :: Xlsx -> Int -> Sink MapRow (ResourceT Archive) a -> IO a
+sheetRowSource x sheetN sink = withArchive (xlArchive x) $
+  getSheetCells x sheetN  $ groupRows
+                         =$ reverseRows
+                         =$ mkMapRows
+                         =$ sink
 
 -- | Make 'Conduit' from 'mkMapRowsSink'.
 mkMapRows :: Monad m => Conduit [Cell] m MapRow
@@ -176,20 +175,16 @@ groupRows = CL.groupBy ((==) `on` (snd.cellIx))
 filterColumns cs = CL.filter ((`S.member` cs) . col2int . fst . cellIx)
 
 
-getSheetCells
- :: MonadThrow m => Xlsx -> Int -> Source m Cell
-getSheetCells (Xlsx{xlArchive=ar, xlSharedStrings=ss, xlWorksheetFiles=sheets}) sheetN
+getSheetCells :: Xlsx -> Int -> Sink Cell (ResourceT Archive) a -> Archive a
+getSheetCells (Xlsx{xlArchive=ar, xlSharedStrings=ss, xlWorksheetFiles=sheets}) sheetN sink
   | sheetN < 0 || sheetN >= length sheets
     = error "parseSheet: Invalid sheet number"
   | otherwise
-    = case xmlSource ar (wfPath $ sheets !! sheetN) of
-      Nothing -> error "An impossible happened"
-      Just xml -> xml $= mkXmlCond (getCell ss)
+    = xmlSource (wfPath $ sheets !! sheetN) $ mkXmlCond (getCell ss) =$ sink
 
 
 -- | Parse single cell from xml stream.
-getCell
- :: MonadThrow m => M.IntMap Text -> Consumer Event m (Maybe Cell)
+getCell :: MonadThrow m => M.IntMap Text -> Consumer Event m (Maybe Cell)
 getCell ss = Xml.tagName (n"c") cAttrs cParser
   where
     cAttrs = do
@@ -243,41 +238,30 @@ tagSeq (x:xs)
 tagSeq _ = error "no tags in tag sequence"
 
 
--- | Get xml event stream from the specified file inside the zip archive.
-xmlSource
- :: MonadThrow m => Zip.Archive -> FilePath -> Maybe (Source m Event)
-xmlSource ar fname
-  =   Xml.parseLBS Xml.def
-  .   Zip.fromEntry
-  <$> Zip.findEntryByPath fname ar
+-- | Stream xml events from the specified file inside the zip archive.
+xmlSource :: FilePath -> Sink Event (ResourceT Archive) a -> Archive a
+xmlSource fname sink
+  = sourceEntry fname $ Xml.parseBytes Xml.def =$ sink
 
 
 -- Get shared strings (if there are some) into IntMap.
+getSharedStrings :: Archive (M.IntMap Text)
 getSharedStrings
-  :: (MonadThrow m, Functor m)
-  => Zip.Archive -> m (M.IntMap Text)
-getSharedStrings x
-  = case xmlSource x "xl/sharedStrings.xml" of
-    Nothing -> return M.empty
-    Just xml -> (M.fromAscList . zip [0..]) <$> getText xml
+  = (M.fromAscList . zip [0..]) <$> xmlSource "xl/sharedStrings.xml" sinkText
 
 -- | Fetch all text from xml stream.
-getText xml = xml $= mkXmlCond Xml.contentMaybe $$ CL.consume
+sinkText = mkXmlCond Xml.contentMaybe =$ CL.consume
 
 
-getStyles :: (MonadThrow m, Functor m) => Zip.Archive -> m Styles
-getStyles ar = case Zip.fromEntry <$> Zip.findEntryByPath "xl/styles.xml" ar of
-  Nothing  -> return (Styles L.empty)
-  Just xml -> return (Styles xml)
+getStyles :: Archive Styles
+getStyles
+  = Styles . L.fromChunks <$> sourceEntry "xl/styles.xml" CL.consume  -- FIXME: fromChunks only in bytestring >= 0.10.*
 
-getWorksheetFiles :: (MonadThrow m, Functor m) => Zip.Archive -> m [WorksheetFile]
-getWorksheetFiles ar = case xmlSource ar "xl/workbook.xml" of
-  Nothing ->
-    error "invalid workbook"
-  Just xml -> do
-    sheetData <- xml $= mkXmlCond getSheetData $$ CL.consume
-    wbRels <- getWbRels ar
-    return [WorksheetFile n ("xl" </> T.unpack (fromJust $ lookup rId wbRels)) | (n, rId) <- sheetData]
+getWorksheetFiles :: Archive [WorksheetFile]
+getWorksheetFiles = do
+  sheetData <- xmlSource "xl/workbook.xml" $ mkXmlCond getSheetData =$ CL.consume
+  wbRels <- getWbRels
+  return [WorksheetFile n ("xl" </> T.unpack (fromJust $ lookup rId wbRels)) | (n, rId) <- sheetData]
 
 getSheetData = Xml.tagName (n"sheet") attrs return
   where
@@ -287,10 +271,10 @@ getSheetData = Xml.tagName (n"sheet") attrs return
       Xml.ignoreAttrs
       return (name, rId)
 
-getWbRels :: (MonadThrow m, Functor m) => Zip.Archive -> m [(Text, Text)]
-getWbRels ar = case xmlSource ar "xl/_rels/workbook.xml.rels" of
-  Nothing  -> return []
-  Just xml -> xml $$ parseWbRels
+getWbRels :: Archive [(Text, Text)]
+getWbRels
+  = xmlSource "xl/_rels/workbook.xml.rels" parseWbRels
+
 
 parseWbRels = Xml.force "relationships required" $
               Xml.tagNoAttr (pr"Relationships") $
@@ -302,7 +286,7 @@ parseWbRels = Xml.force "relationships required" $
       Xml.ignoreAttrs
       return (id, target)
 
--- ---------------------------------------------------------------------
+---------------------------------------------------------------------
 
 
 int :: Text -> Int

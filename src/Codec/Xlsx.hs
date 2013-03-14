@@ -24,11 +24,10 @@ import           Data.Maybe
 import           Data.Text (Text)
 import qualified Data.Text as T
 import           Data.Time.LocalTime (LocalTime)
-import qualified Codec.Archive.Zip as Zip
 import qualified Data.ByteString.Lazy as L
 
 
-data Xlsx = Xlsx{ xlArchive :: Zip.Archive
+data Xlsx = Xlsx{ xlArchive :: FilePath
                 , xlSharedStrings :: IntMap Text
                 , xlStyles :: Styles
                 , xlWorksheetFiles :: [WorksheetFile]

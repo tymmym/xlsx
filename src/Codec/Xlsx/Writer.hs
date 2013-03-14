@@ -4,10 +4,12 @@ module Codec.Xlsx.Writer (
   writeXlsxStyles
   ) where
 
-import qualified Codec.Archive.Zip as Zip
+import           Codec.Archive.Zip
+import           Control.Monad.IO.Class
 import           Control.Monad.Trans.State
 import           Data.ByteString.Lazy.Char8()
 import qualified Data.ByteString.Lazy as L
+import qualified Data.Conduit.Binary as CB
 import           Data.List
 import qualified Data.Map as M
 import           Data.Maybe
@@ -32,17 +34,16 @@ writeXlsx p = writeXlsxStyles p emptyStylesXml
 
 -- | writes list of worksheets and their styling as xlsx file
 writeXlsxStyles :: FilePath -> L.ByteString -> [Worksheet] -> IO ()
-writeXlsxStyles p s d = constructXlsx s d >>= L.writeFile p
+writeXlsxStyles p s d = withArchive p $ constructXlsx s d
 
 data FileData = FileData { fdName :: Text
                          , fdContentType :: Text
                          , fdContents :: L.ByteString}
 
-constructXlsx :: L.ByteString -> [Worksheet] -> IO L.ByteString
+constructXlsx :: L.ByteString -> [Worksheet] -> Archive ()
 constructXlsx s ws = do
-  ct <- getClockTime
+  ct <- liftIO getClockTime
   let
-    TOD t _ = ct
     utct = toUTCTime ct
     (sheetCells, shared) = runState (mapM collectSharedTransform ws) []
     sheetNumber = length ws
@@ -56,10 +57,8 @@ constructXlsx s ws = do
       , FileData "xl/sharedStrings.xml" "application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml" $ ssXml shared
       , FileData "xl/_rels/workbook.xml.rels" "application/vnd.openxmlformats-package.relationships+xml" $ bookRelXml sheetNumber
       , FileData "_rels/.rels" "application/vnd.openxmlformats-package.relationships+xml" rootRelXml ]
-    entries = Zip.toEntry "[Content_Types].xml" t (contentTypesXml files) :
-              map (\fd -> Zip.toEntry (T.unpack $ fdName fd) t (fdContents fd)) files
-    ar = foldr Zip.addEntryToArchive Zip.emptyArchive entries
-  return $ Zip.fromArchive ar
+  sinkEntry "[Content_Types].xml" (CB.sourceLbs $ contentTypesXml files)
+  mapM_ (\fd -> sinkEntry (T.unpack $ fdName fd) (CB.sourceLbs $ fdContents fd)) files
 
 
 coreXml :: CalendarTime -> Text -> L.ByteString
