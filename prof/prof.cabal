@@ -1,0 +1,15 @@
+Name:                xlsx-prof
+Version:             0.1
+Build-type:          Simple
+Cabal-version:       >=1.8
+
+Executable prof
+  Main-is:           Prof.hs
+  Ghc-options:       -O2 -fforce-recomp -rtsopts -auto-all -caf-all -Wall -fno-warn-unused-do-bind
+  Build-depends:     base
+                    ,bytestring
+                    ,containers
+                    ,time
+                    ,conduit
+                    ,text
+                    ,xlsx

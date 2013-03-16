@@ -42,26 +42,6 @@ Library
                     ,old-locale
                     ,filepath
 
-Executable           test
-  Hs-source-dirs:    src
-  Other-modules:     Codec.Xlsx, Codec.Xlsx.Parser, Codec.Xlsx.Writer
-  ghc-options:       -Wall -threaded
-
-  main-is:           Test.hs
-  
-  Build-depends:     base, containers, transformers, bytestring, text
-                    ,conduit     == 1.0.*
-                    ,xml-types   == 0.3.*
-                    ,xml-conduit == 1.1.*
-                    ,zip-conduit == 0.2.*
-                    ,digest      >  0.0.0.1
-                    ,zlib
-                    ,utf8-string
-                    ,time
-                    ,old-time
-                    ,old-locale
-                    ,filepath
-
 Test-suite          data-test
   Type:             exitcode-stdio-1.0
   Hs-source-dirs:   test
